@@ -16,7 +16,6 @@ from transformers import (
     Seq2SeqTrainingArguments,
     set_seed,
 )
-from peft import PeftModel, LoraConfig, TaskType, get_peft_model
 
 logger = logging.getLogger(__name__)
 
@@ -158,10 +157,10 @@ def main():
     set_seed(training_args.seed)
 
     # Load dataset
-    datasets = load_dataset(data_args.dataset_name, data_args.dataset_config_name)
+    raw_datasets = load_dataset(data_args.dataset_name, data_args.dataset_config_name)
     
     # Select columns
-    column_names = datasets["train"].column_names
+    column_names = raw_datasets["train"].column_names
     text_column = data_args.text_column if data_args.text_column in column_names else column_names[0]
     summary_column = data_args.summary_column if data_args.summary_column in column_names else column_names[1]
 
@@ -188,52 +187,41 @@ def main():
         use_auth_token=True if model_args.use_auth_token else None,
     )
 
-    # Add LoRA
-    peft_config = LoraConfig(
-        task_type=TaskType.SEQ_2_SEQ_LM,
-        inference_mode=False,
-        r=8,
-        lora_alpha=32,
-        lora_dropout=0.1
-    )
-    model = get_peft_model(model, peft_config)
-
     # Preprocessing the datasets.
     # First we tokenize all the texts.
 
-    def chunk_text(examples):
+    def chunk_examples_adjusted(examples):
         inputs = examples[text_column]
         targets = examples[summary_column]
-        inputs_chunked = []
-        targets_chunked = []
+        chunk_size = data_args.max_source_length
+        input_chunks = []
+        target_chunks = []
         for input, target in zip(inputs, targets):
-            input_chunks = [input[i:i + data_args.max_source_length] for i in range(0, len(input), data_args.max_source_length)]
-            target_chunks = [target[i:i + data_args.max_target_length] for i in range(0, len(target), data_args.max_target_length)]
-            inputs_chunked.extend(input_chunks)
-            targets_chunked.extend(target_chunks)
-        return {text_column: inputs_chunked, summary_column: targets_chunked}
+            input_chunks.extend([input[i:i + chunk_size] for i in range(0, len(input), chunk_size)])
+            target_chunks.extend([target[i:i + data_args.max_target_length] for i in range(0, len(target), data_args.max_target_length)])
+        
+        # Ensure each chunked article matches the expected length
+        max_chunks = max(len(input_chunks), len(target_chunks))
+        input_chunks.extend([""] * (max_chunks - len(input_chunks)))
+        target_chunks.extend([""] * (max_chunks - len(target_chunks)))
 
-    tokenized_datasets = datasets.map(
-        chunk_text,
-        batched=True,
-        num_proc=data_args.preprocessing_num_workers,
-        remove_columns=column_names,
-        load_from_cache_file=not data_args.overwrite_cache,
-    )
+        return {text_column: input_chunks, summary_column: target_chunks}
 
+    raw_datasets = raw_datasets.map(chunk_examples_adjusted, batched=True)
+
+    # Tokenize the dataset
     def preprocess_function(examples):
         inputs = examples[text_column]
         targets = examples[summary_column]
         model_inputs = tokenizer(inputs, max_length=data_args.max_source_length, padding="max_length", truncation=True)
 
-        # Setup the tokenizer for targets
-        with tokenizer.as_target_tokenizer():
-            labels = tokenizer(targets, max_length=data_args.max_target_length, padding="max_length", truncation=True)
+        # Tokenize targets
+        labels = tokenizer(text_target=targets, max_length=data_args.max_target_length, padding="max_length", truncation=True)
 
         model_inputs["labels"] = labels["input_ids"]
         return model_inputs
 
-    tokenized_datasets = tokenized_datasets.map(
+    tokenized_datasets = raw_datasets.map(
         preprocess_function,
         batched=True,
         num_proc=data_args.preprocessing_num_workers,
@@ -242,12 +230,12 @@ def main():
     )
 
     # Data collator
-    label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
+    label_pad_token_id = tokenizer.pad_token_id
     data_collator = DataCollatorForSeq2Seq(
         tokenizer,
         model=model,
         label_pad_token_id=label_pad_token_id,
-        pad_to_multiple_of=8 if training_args.fp16 else None,
+        pad_to_multiple_of=None if training_args.fp16 else 8,
     )
 
     # Initialize our Trainer
