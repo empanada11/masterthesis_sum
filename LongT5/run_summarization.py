@@ -190,19 +190,6 @@ def main():
     # Preprocessing the datasets.
     # First we tokenize all the texts.
 
-    def chunk_examples(examples):
-        inputs = examples[text_column]
-        targets = examples[summary_column]
-        inputs_chunked = []
-        targets_chunked = []
-        for input, target in zip(inputs, targets):
-            input_chunks = [input[i:i + data_args.max_source_length] for i in range(0, len(input), data_args.max_source_length)]
-            target_chunks = [target[i:i + data_args.max_target_length] for i in range(0, len(target), data_args.max_target_length)]
-            inputs_chunked.extend(input_chunks)
-            targets_chunked.extend(target_chunks)
-        return {text_column: inputs_chunked, summary_column: targets_chunked}
-
-    # Adjust chunk_examples function to handle length mismatches
     def chunk_examples_adjusted(examples):
         inputs = examples[text_column]
         targets = examples[summary_column]
@@ -210,12 +197,6 @@ def main():
         input_chunks = []
         target_chunks = []
         for input, target in zip(inputs, targets):
-            if len(input) % chunk_size != 0:
-                padding_length = chunk_size - (len(input) % chunk_size)
-                input += " " * padding_length  # Adding space padding
-            if len(target) % data_args.max_target_length != 0:
-                padding_length = data_args.max_target_length - (len(target) % data_args.max_target_length)
-                target += " " * padding_length  # Adding space padding
             input_chunks.extend([input[i:i + chunk_size] for i in range(0, len(input), chunk_size)])
             target_chunks.extend([target[i:i + data_args.max_target_length] for i in range(0, len(target), data_args.max_target_length)])
         return {text_column: input_chunks, summary_column: target_chunks}
