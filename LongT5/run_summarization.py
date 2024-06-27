@@ -199,6 +199,12 @@ def main():
         for input, target in zip(inputs, targets):
             input_chunks.extend([input[i:i + chunk_size] for i in range(0, len(input), chunk_size)])
             target_chunks.extend([target[i:i + data_args.max_target_length] for i in range(0, len(target), data_args.max_target_length)])
+        
+        # Ensure each chunked article matches the expected length
+        max_chunks = max(len(input_chunks), len(target_chunks))
+        input_chunks.extend([""] * (max_chunks - len(input_chunks)))
+        target_chunks.extend([""] * (max_chunks - len(target_chunks)))
+
         return {text_column: input_chunks, summary_column: target_chunks}
 
     raw_datasets = raw_datasets.map(chunk_examples_adjusted, batched=True)
