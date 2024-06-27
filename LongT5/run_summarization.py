@@ -1,143 +1,172 @@
 import logging
-import os
-import sys
 from dataclasses import dataclass, field
 from typing import Optional
 
-import datasets
-import transformers
-from datasets import load_dataset
 from transformers import (
-    AutoConfig,
-    AutoModelForSeq2SeqLM,
-    AutoTokenizer,
     HfArgumentParser,
-    Seq2SeqTrainer,
+    TrainingArguments,
     Seq2SeqTrainingArguments,
+    Seq2SeqTrainer,
+    LongT5ForConditionalGeneration,
+    LongT5Tokenizer,
     set_seed,
 )
-from transformers.trainer_utils import get_last_checkpoint, is_main_process
+from datasets import load_dataset
 
 logger = logging.getLogger(__name__)
-
-@dataclass
-class DataTrainingArguments:
-    dataset_name: Optional[str] = field(
-        default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
-    )
-    max_source_length: Optional[int] = field(
-        default=8192,
-        metadata={
-            "help": "The maximum total input sequence length after tokenization. Sequences longer than this will be truncated."
-        },
-    )
-    max_target_length: Optional[int] = field(
-        default=512,
-        metadata={
-            "help": "The maximum total sequence length for target text after tokenization. Sequences longer than this will be truncated."
-        },
-    )
 
 @dataclass
 class ModelArguments:
     model_name_or_path: str = field(
         metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
     )
+    tokenizer_name: Optional[str] = field(
+        default=None,
+        metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
+    )
+    cache_dir: Optional[str] = field(
+        default=None,
+        metadata={"help": "Where to store the pretrained models downloaded from huggingface.co"}
+    )
+    trust_remote_code: bool = field(
+        default=False,
+        metadata={"help": "Whether to trust remote code"}
+    )
 
-def chunk_text(text, chunk_size):
+@dataclass
+class DataTrainingArguments:
+    dataset_name: Optional[str] = field(
+        default=None, metadata={"help": "The name of the dataset to use (via the datasets library)."}
+    )
+    dataset_config_name: Optional[str] = field(
+        default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
+    )
+    max_source_length: Optional[int] = field(
+        default=1024,
+        metadata={
+            "help": "The maximum total input sequence length after tokenization. Sequences longer than this will be truncated."
+        },
+    )
+    max_target_length: Optional[int] = field(
+        default=128,
+        metadata={
+            "help": "The maximum total sequence length for target text after tokenization. Sequences longer than this will be truncated."
+        },
+    )
+    preprocessing_num_workers: Optional[int] = field(
+        default=None,
+        metadata={"help": "The number of processes to use for the preprocessing."},
+    )
+    overwrite_cache: bool = field(
+        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
+    )
+
+@dataclass
+class CustomTrainingArguments(TrainingArguments):
+    gradient_checkpointing: bool = field(default=False)
+    bf16: bool = field(default=False)
+
+
+def chunk_text(text, max_length):
     words = text.split()
-    for i in range(0, len(words), chunk_size):
-        yield ' '.join(words[i:i + chunk_size])
+    chunks = []
+    for i in range(0, len(words), max_length):
+        chunks.append(" ".join(words[i:i + max_length]))
+    return chunks
 
-def preprocess_function(examples, tokenizer, chunk_size):
+
+def preprocess_function(examples, tokenizer, max_source_length, max_target_length):
     inputs = examples["article"]
     targets = examples["abstract"]
+    
+    input_chunks = [chunk_text(text, max_source_length) for text in inputs]
+    flattened_inputs = [chunk for sublist in input_chunks for chunk in sublist]
+    flattened_targets = [target for target_list in [[target] * len(chunks) for target, chunks in zip(targets, input_chunks)] for target in target_list]
 
-    chunked_inputs = []
-    chunked_targets = []
+    model_inputs = tokenizer(
+        flattened_inputs, max_length=max_source_length, truncation=True, return_tensors="pt", padding="max_length"
+    )
 
-    for input_text, target_text in zip(inputs, targets):
-        input_chunks = list(chunk_text(input_text, chunk_size))
-        for chunk in input_chunks:
-            chunked_inputs.append(chunk)
-            chunked_targets.append(target_text)
-
-    model_inputs = tokenizer(chunked_inputs, max_length=chunk_size, padding="max_length", truncation=True)
-    labels = tokenizer(chunked_targets, max_length=512, padding="max_length", truncation=True)
+    with tokenizer.as_target_tokenizer():
+        labels = tokenizer(
+            flattened_targets, max_length=max_target_length, truncation=True, return_tensors="pt", padding="max_length"
+        )
 
     model_inputs["labels"] = labels["input_ids"]
     return model_inputs
 
+
 def main():
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, Seq2SeqTrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, CustomTrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    logger.info(f"Training/evaluation parameters {training_args}")
 
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
-    config = AutoConfig.from_pretrained(
+    # Load pretrained model and tokenizer
+    tokenizer = LongT5Tokenizer.from_pretrained(
         model_args.model_name_or_path,
-    )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_args.model_name_or_path,
-    )
-    model = AutoModelForSeq2SeqLM.from_pretrained(
-        model_args.model_name_or_path,
-        config=config,
+        cache_dir=model_args.cache_dir,
+        use_fast=True,
+        trust_remote_code=model_args.trust_remote_code
     )
 
-    # Load dataset
-    dataset = load_dataset(data_args.dataset_name)
+    model = LongT5ForConditionalGeneration.from_pretrained(
+        model_args.model_name_or_path,
+        cache_dir=model_args.cache_dir,
+        trust_remote_code=model_args.trust_remote_code
+    )
 
-    # Preprocess dataset with chunking
-    tokenized_datasets = dataset.map(
-        lambda examples: preprocess_function(examples, tokenizer, data_args.max_source_length),
+    datasets = load_dataset(data_args.dataset_name, data_args.dataset_config_name)
+    column_names = datasets["train"].column_names
+
+    train_dataset = datasets["train"].map(
+        lambda examples: preprocess_function(examples, tokenizer, data_args.max_source_length, data_args.max_target_length),
         batched=True,
-        remove_columns=["article", "abstract"],
+        remove_columns=column_names,
+        load_from_cache_file=not data_args.overwrite_cache,
+        desc="Running tokenizer on train dataset",
     )
 
-    # Initialize our Trainer
+    eval_dataset = datasets["validation"].map(
+        lambda examples: preprocess_function(examples, tokenizer, data_args.max_source_length, data_args.max_target_length),
+        batched=True,
+        remove_columns=column_names,
+        load_from_cache_file=not data_args.overwrite_cache,
+        desc="Running tokenizer on validation dataset",
+    )
+
+    training_args.remove_unused_columns = False
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
-        train_dataset=tokenized_datasets["train"] if training_args.do_train else None,
-        eval_dataset=tokenized_datasets["validation"] if training_args.do_eval else None,
-        tokenizer=tokenizer,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        tokenizer=tokenizer
     )
 
     # Training
     if training_args.do_train:
         train_result = trainer.train()
-        trainer.save_model()  # Saves the tokenizer too for easy upload
-        output_train_file = os.path.join(training_args.output_dir, "train_results.txt")
-        with open(output_train_file, "w") as writer:
-            logger.info("***** Train results *****")
-            for key, value in sorted(train_result.metrics.items()):
-                logger.info(f"  {key} = {value}")
-                writer.write(f"{key} = {value}\n")
+        trainer.save_model()
+        trainer.log_metrics("train", train_result.metrics)
+        trainer.save_metrics("train", train_result.metrics)
+        trainer.save_state()
 
     # Evaluation
     if training_args.do_eval:
-        logger.info("*** Evaluate ***")
-        metrics = trainer.evaluate(max_length=data_args.max_target_length)
-        max_eval_samples = data_args.max_eval_samples
-        metrics["eval_samples"] = min(max_eval_samples, len(tokenized_datasets["validation"]))
-
+        metrics = trainer.evaluate()
         trainer.log_metrics("eval", metrics)
         trainer.save_metrics("eval", metrics)
 
     # Prediction
     if training_args.do_predict:
-        logger.info("*** Predict ***")
-        predict_results = trainer.predict(
-            tokenized_datasets["test"], metric_key_prefix="predict", max_length=data_args.max_target_length
-        )
-        metrics = predict_results.metrics
-        max_predict_samples = data_args.max_predict_samples
-        metrics["predict_samples"] = min(max_predict_samples, len(tokenized_datasets["test"]))
+        predict_results = trainer.predict(test_dataset=eval_dataset)
+        trainer.log_metrics("predict", predict_results.metrics)
+        trainer.save_metrics("predict", predict_results.metrics)
 
-        trainer.log_metrics("predict", metrics)
-        trainer.save_metrics("predict", metrics)
 
 if __name__ == "__main__":
     main()
