@@ -202,8 +202,27 @@ def main():
             targets_chunked.extend(target_chunks)
         return {text_column: inputs_chunked, summary_column: targets_chunked}
 
-    raw_datasets = raw_datasets.map(chunk_examples, batched=True)
+    # Adjust chunk_examples function to handle length mismatches
+    def chunk_examples_adjusted(examples):
+        inputs = examples[text_column]
+        targets = examples[summary_column]
+        chunk_size = data_args.max_source_length
+        input_chunks = []
+        target_chunks = []
+        for input, target in zip(inputs, targets):
+            if len(input) % chunk_size != 0:
+                padding_length = chunk_size - (len(input) % chunk_size)
+                input += " " * padding_length  # Adding space padding
+            if len(target) % data_args.max_target_length != 0:
+                padding_length = data_args.max_target_length - (len(target) % data_args.max_target_length)
+                target += " " * padding_length  # Adding space padding
+            input_chunks.extend([input[i:i + chunk_size] for i in range(0, len(input), chunk_size)])
+            target_chunks.extend([target[i:i + data_args.max_target_length] for i in range(0, len(target), data_args.max_target_length)])
+        return {text_column: input_chunks, summary_column: target_chunks}
 
+    raw_datasets = raw_datasets.map(chunk_examples_adjusted, batched=True)
+
+    # Tokenize the dataset
     def preprocess_function(examples):
         inputs = examples[text_column]
         targets = examples[summary_column]
@@ -225,12 +244,12 @@ def main():
     )
 
     # Data collator
-    label_pad_token_id = -100 if data_args.ignore_pad_token_for_loss else tokenizer.pad_token_id
+    label_pad_token_id = tokenizer.pad_token_id
     data_collator = DataCollatorForSeq2Seq(
         tokenizer,
         model=model,
         label_pad_token_id=label_pad_token_id,
-        pad_to_multiple_of=8 if training_args.fp16 else None,
+        pad_to_multiple_of=None if training_args.fp16 else 8,
     )
 
     # Initialize our Trainer
