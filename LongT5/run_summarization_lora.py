@@ -16,6 +16,7 @@ from transformers import (
     Seq2SeqTrainingArguments,
     set_seed,
 )
+from peft import LoraConfig, get_peft_model, TaskType
 
 logger = logging.getLogger(__name__)
 
@@ -136,13 +137,10 @@ class DataTrainingArguments:
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, Seq2SeqTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
-        # If we pass only one argument to the script and it's the path to a json file,
-        # let's parse it to get our arguments.
         model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
         model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
-    # Setup logging
     logging.basicConfig(
         format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         datefmt="%m/%d/%Y %H:%M:%S",
@@ -150,21 +148,16 @@ def main():
     )
 
     logger.setLevel(logging.INFO if training_args.local_rank in [-1, 0] else logging.WARN)
-
     logger.info("Training/evaluation parameters %s", training_args)
 
-    # Set seed before initializing model.
     set_seed(training_args.seed)
 
-    # Load dataset
     raw_datasets = load_dataset(data_args.dataset_name, data_args.dataset_config_name)
     
-    # Select columns
     column_names = raw_datasets["train"].column_names
     text_column = data_args.text_column if data_args.text_column in column_names else column_names[0]
     summary_column = data_args.summary_column if data_args.summary_column in column_names else column_names[1]
 
-    # Load pretrained model and tokenizer
     config = AutoConfig.from_pretrained(
         model_args.config_name if model_args.config_name else model_args.model_name_or_path,
         cache_dir=model_args.cache_dir,
@@ -187,35 +180,22 @@ def main():
         use_auth_token=True if model_args.use_auth_token else None,
     )
 
-    # Preprocessing the datasets.
-    # First we tokenize all the texts.
+    lora_config = LoraConfig(
+        task_type=TaskType.SEQ_2_SEQ_LM,
+        inference_mode=False,
+        r=8,
+        lora_alpha=32,
+        lora_dropout=0.1,
+        target_modules=["q", "v"],
+    )
 
-    def chunk_examples_adjusted(examples):
-        inputs = examples[text_column]
-        targets = examples[summary_column]
-        chunk_size = data_args.max_source_length
-        input_chunks = []
-        target_chunks = []
-        for input, target in zip(inputs, targets):
-            input_chunks.extend([input[i:i + chunk_size] for i in range(0, len(input), chunk_size)])
-            target_chunks.extend([target[i:i + data_args.max_target_length] for i in range(0, len(target), data_args.max_target_length)])
-        
-        # Ensure each chunked article matches the expected length
-        max_chunks = max(len(input_chunks), len(target_chunks))
-        input_chunks.extend([""] * (max_chunks - len(input_chunks)))
-        target_chunks.extend([""] * (max_chunks - len(target_chunks)))
+    model = get_peft_model(model, lora_config)
 
-        return {text_column: input_chunks, summary_column: target_chunks}
-
-    raw_datasets = raw_datasets.map(chunk_examples_adjusted, batched=True)
-
-    # Tokenize the dataset
     def preprocess_function(examples):
         inputs = examples[text_column]
         targets = examples[summary_column]
         model_inputs = tokenizer(inputs, max_length=data_args.max_source_length, padding="max_length", truncation=True)
 
-        # Tokenize targets
         labels = tokenizer(text_target=targets, max_length=data_args.max_target_length, padding="max_length", truncation=True)
 
         model_inputs["labels"] = labels["input_ids"]
@@ -229,7 +209,6 @@ def main():
         load_from_cache_file=not data_args.overwrite_cache,
     )
 
-    # Data collator
     label_pad_token_id = tokenizer.pad_token_id
     data_collator = DataCollatorForSeq2Seq(
         tokenizer,
@@ -238,7 +217,6 @@ def main():
         pad_to_multiple_of=None if training_args.fp16 else 8,
     )
 
-    # Initialize our Trainer
     trainer = Seq2SeqTrainer(
         model=model,
         args=training_args,
@@ -248,10 +226,9 @@ def main():
         data_collator=data_collator,
     )
 
-    # Training
     if training_args.do_train:
         train_result = trainer.train()
-        trainer.save_model()  # Saves the tokenizer too for easy upload
+        trainer.save_model()
 
         output_train_file = os.path.join(training_args.output_dir, "train_results.txt")
         if trainer.is_world_process_zero():
@@ -261,7 +238,6 @@ def main():
                     logger.info(f"  {key} = {value}")
                     writer.write(f"{key} = {value}\n")
 
-    # Evaluation
     if training_args.do_eval:
         logger.info("*** Evaluate ***")
 
@@ -278,7 +254,6 @@ def main():
                     logger.info(f"  {key} = {value}")
                     writer.write(f"{key} = {value}\n")
 
-    # Predict
     if training_args.do_predict:
         logger.info("*** Predict ***")
 
