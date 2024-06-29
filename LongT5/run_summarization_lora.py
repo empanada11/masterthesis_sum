@@ -191,6 +191,11 @@ def main():
 
     model = get_peft_model(model, lora_config)
 
+    # Ensure model parameters require gradients
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            param.requires_grad = True
+
     def preprocess_function(examples):
         inputs = examples[text_column]
         targets = examples[summary_column]
@@ -199,6 +204,11 @@ def main():
         labels = tokenizer(text_target=targets, max_length=data_args.max_target_length, padding="max_length", truncation=True)
 
         model_inputs["labels"] = labels["input_ids"]
+        
+        # Ensure inputs require gradients
+        for key in model_inputs:
+            model_inputs[key] = torch.tensor(model_inputs[key], requires_grad=True)
+            
         return model_inputs
 
     tokenized_datasets = raw_datasets.map(
@@ -225,6 +235,9 @@ def main():
         tokenizer=tokenizer,
         data_collator=data_collator,
     )
+
+    # Ensure `use_cache` is set to False
+    model.config.use_cache = False
 
     if training_args.do_train:
         train_result = trainer.train()
