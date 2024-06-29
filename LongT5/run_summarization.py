@@ -1,3 +1,23 @@
+#!/usr/bin/env python
+# coding=utf-8
+# Copyright 1 The HuggingFace Team. All rights reserved.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""
+Fine-tuning the library models for sequence to sequence.
+"""
+# You can also adapt this script on your own sequence to sequence task. Pointers for this are left as comments.
+
 import logging
 import os
 import sys
@@ -528,7 +548,7 @@ def main():
         summary_column = dataset_columns[1] if dataset_columns is not None else column_names[1]
     else:
         summary_column = data_args.summary_column
-        if summary_column not in column_names):
+        if summary_column not in column_names:
             raise ValueError(
                 f"--summary_column' value '{data_args.summary_column}' needs to be one of: {', '.join(column_names)}"
             )
@@ -770,4 +790,3 @@ def _mp_fn(index):
 
 if __name__ == "__main__":
     main()
-
