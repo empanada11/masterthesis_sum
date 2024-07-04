@@ -1,6 +1,7 @@
 import sys
 import os
-from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, Seq2SeqTrainer, Seq2SeqTrainingArguments, TrainerCallback, EarlyStoppingCallback
+import warnings
+from transformers import AutoModelForSeq2SeqLM, AutoTokenizer, Seq2SeqTrainer, Seq2SeqTrainingArguments, EarlyStoppingCallback
 from datasets import load_dataset
 from peft import get_peft_model, LoraConfig, TaskType
 from transformers import DataCollatorForSeq2Seq
@@ -9,6 +10,10 @@ from accelerate import Accelerator
 def main():
     # Initialize Accelerator for multi-GPU support
     accelerator = Accelerator()
+
+    # Suppress specific warnings
+    warnings.filterwarnings("ignore", category=FutureWarning, message="The `device` argument is deprecated")
+    warnings.filterwarnings("ignore", category=UserWarning, message="torch.utils.checkpoint: the use_reentrant parameter should be passed explicitly")
 
     # Load the LongT5 model and tokenizer
     model = AutoModelForSeq2SeqLM.from_pretrained("google/long-t5-local-base")
@@ -52,8 +57,8 @@ def main():
     data_collator = DataCollatorForSeq2Seq(tokenizer, model=model)
     training_args = Seq2SeqTrainingArguments(
         output_dir="./results",
-        evaluation_strategy="epoch",  # Changed to epoch to match save_strategy
-        save_strategy="epoch",  # Ensuring both strategies are the same
+        eval_strategy="epoch",  # Use eval_strategy instead of deprecated evaluation_strategy
+        save_strategy="epoch",
         learning_rate=2e-5,
         per_device_train_batch_size=4,
         per_device_eval_batch_size=4,
@@ -63,10 +68,11 @@ def main():
         predict_with_generate=True,
         gradient_accumulation_steps=4,
         gradient_checkpointing=True,
+        use_reentrant=False,  # Explicitly set use_reentrant to avoid warning
         lr_scheduler_type='linear',
         warmup_steps=500,
         load_best_model_at_end=True,
-        report_to="none"  # Avoid reporting to external services
+        report_to="none"
     )
 
     trainer = Seq2SeqTrainer(
@@ -76,13 +82,15 @@ def main():
         eval_dataset=eval_dataset,
         tokenizer=tokenizer,
         data_collator=data_collator,
-        callbacks=[EarlyStoppingCallback(early_stopping_patience=1)]  # Early stopping after 1 epoch of no improvement
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=1)]
     )
 
     # Prepare everything with accelerator
     trainer.accelerator = accelerator
 
+    # Start training
     trainer.train()
 
 if __name__ == "__main__":
     main()
+
