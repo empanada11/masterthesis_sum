@@ -60,7 +60,7 @@ def main():
         num_train_epochs=1,  # Reduced number of epochs
         predict_with_generate=True,
         gradient_accumulation_steps=1,
-        gradient_checkpointing=True,
+        gradient_checkpointing=False,  # Disable gradient checkpointing
         lr_scheduler_type='linear',
         warmup_steps=100,
         load_best_model_at_end=True,
