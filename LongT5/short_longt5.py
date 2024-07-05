@@ -61,7 +61,6 @@ def main():
         predict_with_generate=True,
         gradient_accumulation_steps=1,
         gradient_checkpointing=True,
-        use_reentrant=False,
         lr_scheduler_type='linear',
         warmup_steps=100,
         load_best_model_at_end=True,
@@ -84,4 +83,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
