@@ -1,0 +1,13 @@
+{
+"dataset_name": "mimiklee/masterthesis_clean_text",
+"dataset_config_name": "default",
+"max_source_length": 16384,
+"generation_max_length": 1024,
+"pad_prefix": false,
+"num_train_epochs": 3,
+"input_column": "document",
+"output_column": "summary",
+"metric_names": ["rouge"],
+"metric_for_best_model": "rouge/geometric_mean",
+"greater_is_better": true
+}
