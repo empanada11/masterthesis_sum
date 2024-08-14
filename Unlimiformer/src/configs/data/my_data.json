@@ -1,5 +1,5 @@
 {
-"dataset_name": "mimiklee/masterthesis_clean_text",
+"dataset_name": "mimiklee/masterthesis_clean_text_20k_id",
 "dataset_config_name": "default",
 "max_source_length": 16384,
 "generation_max_length": 1024,
